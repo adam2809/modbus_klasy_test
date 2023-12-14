@@ -5,7 +5,6 @@
 #include "device.h"
 #include "comms.h"
 #include "secrets.h"
-#include <ArduinoRS485.h>
 
 #define MAIN_LOOP_DELAY 10
 
@@ -17,24 +16,29 @@ char pass[] = SECRET_PASS;
 WiFiClient wifi_client;
 MQTTClient mqtt_client;
 
-#define RS485_HW_SERIAL Serial1
-#define RS485_TX_PIN 0
-#define RS485_DE_RE_PIN 15
-RS485Class rs485(RS485_HW_SERIAL, RS485_TX_PIN, RS485_DE_RE_PIN, RS485_DE_RE_PIN);
-
 IntSerializer int_ser;
 
-OutputDevice* out_devices_arr[MAX_OUTPUT_DEVICES_COUNT];
-Vector<OutputDevice*> out_devices(out_devices_arr);
-CommsMqttOutput comms_mqtt_out(&out_devices,&mqtt_client);
-CommsModbusOutput comms_modbus_out(&out_devices,&rs485);
+#define RS485_HW_SERIAL Serial1
+#define RS485_TX_PIN 0
+#define RS485_DE_RE_PIN 2
+RS485Class rs485(RS485_HW_SERIAL, RS485_TX_PIN, RS485_DE_RE_PIN, RS485_DE_RE_PIN);
 
-InputDevice* in_devices_arr[MAX_INPUT_DEVICES_COUNT];
-Vector<InputDevice*> in_devices(in_devices_arr);
-CommsMqttInput comms_mqtt_in(&in_devices,&mqtt_client);
-CommsModbusInput comms_modbus_in(&in_devices,&rs485);
+#define MODBUS_SLAVE_ID 1
 
-void connect_wifi() {
+InputDevice* in_devices[MAX_INPUT_DEVICES_COUNT];
+OutputDevice* out_devices[MAX_OUTPUT_DEVICES_COUNT];
+#ifdef COMMS_MQTT
+CommsMqttInput comms_in(in_devices,&mqtt_client);
+CommsMqttOutput comms_out(out_devices,&mqtt_client);
+#else
+CommsModbusInput comms_in(in_devices,&rs485);
+CommsModbusOutput comms_out(out_devices,&rs485);
+#endif
+
+
+void connect() {
+    digitalWrite(LED_BUILTIN,HIGH);
+
     IPAddress ip = IPAddress(192,168,50,186);
     mqtt_client.begin(ip,1883, wifi_client);
     Serial.print("checking wifi...");
@@ -54,31 +58,34 @@ void connect_wifi() {
 }
 
 void connect_modbus(){
-    if (!ModbusRTUServer.begin(rs485,1,9600,SERIAL_8N1)){
+    if (!ModbusRTUServer.begin(rs485,MODBUS_SLAVE_ID,9600,SERIAL_8N1)){
         while(1){
             Serial.println("Failed to start Modbus RTU Server!");
             delay(500);
         }
     }
+    is_connected = true;
 }
 
 void setup() {
-    digitalWrite(LED_BUILTIN,HIGH);
     Serial.begin(115200);
 
+#ifdef COMMS_MQTT
     WiFi.begin(ssid, pass);
-    connect_wifi();
+    connect();
+#else
     connect_modbus();
+#endif
 
-    in_devices.push_back(new DigitalWriteInputDevice((Serializer*) &int_ser,"ledzik",16));
-    out_devices.push_back(new ButtonDevice((Serializer*) &int_ser,"batoooonik",17));
+    comms_in.add_device(new DigitalWriteInputDevice((Serializer*) &int_ser,"ledzik",16));
+    comms_out.add_device(new ButtonDevice((Serializer*) &int_ser,"batoooonik",17));
 
-    comms_modbus_in.init();
-    comms_modbus_out.init();
-    comms_mqtt_in.init();
-    comms_mqtt_out.init();
+    comms_in.init();
+    comms_out.init();
 
-    comms_mqtt_in.publish_all_topics_debug();
+#ifdef COMMS_MQTT
+    comms_in.publish_all_topics_debug();
+#endif
 }
 
 void setup1() {
@@ -86,16 +93,15 @@ void setup1() {
 }
 
 void loop() {
+#ifdef COMMS_MQTT
     if (!mqtt_client.connected()) {
         is_connected = false;
-        connect_wifi();
+        connect();
     }
+#endif
 
-    comms_mqtt_out.output_all();
-    comms_mqtt_in.loop();
-
-    comms_modbus_out.output_all();
-    comms_modbus_in.loop();
+    comms_out.output_all();
+    comms_in.loop();
 
     delay(MAIN_LOOP_DELAY);
 }
